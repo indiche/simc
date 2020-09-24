@@ -5,6 +5,7 @@
 
 #include "simulationcraft.hpp"
 #include "player/covenant.hpp"
+#include <random>
 
 namespace { // UNNAMED NAMESPACE
 // ==========================================================================
@@ -7124,12 +7125,19 @@ struct convoke_the_spirits_t : public druid_spell_t
   int max_ticks;
   int ultimate_tick;
 
+  // General
+  action_t *conv_rake;
+  action_t *conv_thrash;
+  action_t* conv_regrowth;
+  action_t* conv_rejuv;
+  action_t* conv_wr;
+  action_t* conv_mf;
+
   // Balance
   action_t* conv_fm;
   action_t* conv_ss;
-  action_t* conv_wr;
   action_t* conv_sf;
-  action_t* conv_mf;
+
   bool mf_cast;
   int mf_count;
   int ss_count;
@@ -7137,8 +7145,22 @@ struct convoke_the_spirits_t : public druid_spell_t
   int wr_count;
 
   // Feral
+  action_t* conv_feral_frenzy;
+  action_t* conv_bite;
+  action_t* conv_shred;
+  action_t* conv_tigers_fury;
+
   // Guardian
+  action_t* conv_pulverize;
+  action_t* conv_mangle;
+  action_t* conv_ironfur;
+
   // Restoration
+  action_t* conv_flourish;
+  action_t* conv_wild_growth;
+  action_t* conv_swiftmend;
+
+  std::default_random_engine generator;
 
   convoke_the_spirits_t( druid_t* p, const std::string& options_str )
     : druid_spell_t( "convoke_the_spirits", p, p->covenant.night_fae, options_str )
@@ -7157,16 +7179,35 @@ struct convoke_the_spirits_t : public druid_spell_t
     max_ticks = as<int>( util::ceil( dot_duration / base_tick_time ) );
     deck = p->get_shuffled_rng( "convoke_the_spirits", heals_int, max_ticks );
 
+    // Global
+    conv_rake = get_convoke_action<::cat_attacks::rake_t>( "rake", options_str );
+    // TODO: Verify that this is cat thrash
+    conv_thrash = get_convoke_action<::cat_attacks::thrash_cat_t>( "thrash_cat", options_str);
+    conv_mf = get_convoke_action<moonfire_t>( "moonfire",options_str );
+    conv_wr = get_convoke_action<wrath_t>( "wrath", options_str );
+    conv_regrowth = get_convoke_action<::heals::regrowth_t>( "regrowth", options_str );
+    conv_rejuv = get_convoke_action<::heals::rejuvenation_t>( "rejuvenation", options_str );
+
     // Balance
     conv_fm = get_convoke_action<full_moon_t>( "full_moon", options_str );
-    conv_wr = get_convoke_action<wrath_t>( "wrath", options_str );
     conv_ss = get_convoke_action<starsurge_t>( "starsurge", options_str );
     conv_sf = get_convoke_action<starfall_t>( "starfall", options_str );
-    conv_mf = get_convoke_action<moonfire_t>( "moonfire",options_str );
 
     // Feral
+    conv_feral_frenzy = get_convoke_action<::cat_attacks::feral_frenzy_driver_t>( "feral_frenzy", options_str );
+    conv_bite = get_convoke_action<::cat_attacks::ferocious_bite_t>( "ferocious_bite", options_str);
+    conv_shred = get_convoke_action<::cat_attacks::shred_t>( "shred", options_str);
+    conv_tigers_fury = get_convoke_action<::cat_attacks::tigers_fury_t>( "tigers_fury", options_str );
+
     // Guardian
+    // conv_mangle = get_convoke_action<::bear_attacks::mangle_t>( "mangle", options_str );
+    // conv_ironfur = get_convoke_action<::spells::ironfur_t>( "ironfur", options_str);
+
     // Restoration
+    // Not sure how important is to implement these
+    // conv_flourish = get_convoke_action<flourish_t>( "flourish", options_str ); 
+    // conv_wild_growth = get_convoke_action<::heals::wild_growth_t>( "wild_growth", options_str );
+    // conv_swiftmend = get_convoke_action<::heals::swiftmend_t>( "swiftmend", options_str);
   }
 
   template <typename T, typename... Ts>
@@ -7183,28 +7224,7 @@ struct convoke_the_spirits_t : public druid_spell_t
   {
     druid_spell_t::execute();
     p()->reset_auto_attacks( composite_dot_duration( execute_state ) );
-
     p()->buff.convoke_the_spirits->trigger();
-
-    deck->reset();
-
-    heal_cast = false;
-
-    // Balance
-    mf_cast  = false;
-    mf_count = 0;
-    ss_count = 0;
-    wr_cast  = false;
-    wr_count = 0;
-
-    if ( rng().roll( p()->convoke_the_spirits_ultimate ) )
-      ultimate_tick = rng().range( max_ticks );
-    else
-      ultimate_tick = 0;
-
-    // Feral
-    // Guardian
-    // Restoration
   }
 
   void tick( dot_t* d ) override
@@ -7213,6 +7233,108 @@ struct convoke_the_spirits_t : public druid_spell_t
     player_t* conv_tar  = nullptr;
 
     druid_spell_t::tick( d );
+
+    std::vector<player_t*> tl = target_list();
+    if ( tl.empty() )
+      return;
+
+    std::vector<player_t*> moonfire_target_list;
+    for ( auto i : tl )
+    {
+      if ( !td( i )->dots.moonfire->is_ticking() )
+        moonfire_target_list.push_back( i );
+    }
+
+    std::vector<player_t*> rake_target_list;
+    for ( auto i : tl )
+    {
+      if ( !td( i )->dots.rake->is_ticking() && p()->get_player_distance( *i ) <= conv_rake->range )
+        rake_target_list.push_back( i );
+    }
+
+    std::vector<player_t*> thrash_target_list;
+    for ( auto i : tl )
+    {
+      if ( !td( i )->dots.thrash_cat->is_ticking() && p()->get_player_distance( *i ) <= conv_thrash->range )
+        thrash_target_list.push_back( i );
+    }
+
+    // Construct the map with spells and weight for each spell
+    std::map<action_t *, int> spell_weight_map = {
+      // Special Attacks - low chance when in form capped at 1 per cast ???
+
+      // Balance
+      { conv_fm, ( 0.05 * ( 1 * p()->buff.moonkin_form->check() * !ultimate_tick ) ) },
+      
+      // Feral
+      { conv_feral_frenzy, ( 0.05 * ( 1 * p()->buff.cat_form->check() * !ultimate_tick ) ) },
+
+      // Bear
+      { conv_pulverize, ( 0.05 * ( 1 * p()->buff.bear_form->check() * !ultimate_tick ) ) },
+
+
+      // Form Attacks
+
+      // Balance
+      { conv_ss, ( 0.2 * ( 1 * p()->buff.moonkin_form->check() ) ) },
+      { conv_sf, ( 0.2 * ( 1 * p()->buff.moonkin_form->check() * !p()->buff.starfall->check() ) ) },
+
+      // Feral
+      { conv_bite, ( 0.2 * ( 1 * p()->buff.cat_form->check() ) ) },
+      { conv_shred, ( 0.2 * ( 1 * p()->buff.cat_form->check() ) ) },
+      { conv_tigers_fury, ( 0.2 * ( 1 * p()->buff.cat_form->check() * !p()->buff.tigers_fury->check() ) ) },
+
+
+      // Global
+      { conv_rake, ( 0.05 * ( 4 * !rake_target_list.empty() ) ) },
+      { conv_thrash, ( 0.05 * ( 4 * !thrash_target_list.empty() )) },
+      { conv_mf, ( 0.05 * ( 4 * !moonfire_target_list.empty() ) ) },
+      { conv_wr, ( 0.05 * ( 4 * p()->buff.moonkin_form->check() ) ) },
+
+      // TODO: Figure out how to get HoTs on player
+      { conv_regrowth, ( 0.2 * ( 1 ) ) },
+      { conv_rejuv, ( 0.2 * ( 1 ) ) },
+    };
+
+
+    std::vector<action_t *> spells;
+    std::vector<int> weights;
+    for ( auto const& item : spell_weight_map ) {
+      spells.push_back(item.first);
+      weights.push_back(item.second);
+    }
+
+    std::discrete_distribution<> distribution(weights.begin(), weights.end());
+
+    int spell_index = distribution(generator);
+    conv_cast = spells[spell_index];
+    debug_cast<druid_action_t<spell_t>*>( conv_cast )->free_cast = free_cast_e::CONVOKE;
+    sim->print_debug( "rolled random convoke spell: {} with weight: {}", conv_cast->name(), weights[spell_index] );
+
+    if (conv_cast == conv_fm || conv_cast == conv_feral_frenzy || conv_cast == conv_pulverize)
+      ultimate_tick = 1;
+
+    conv_tar = tl[ static_cast<size_t>( rng().range( 0, as<double>( tl.size() ) ) ) ];
+
+    if ( conv_cast == conv_mf && moonfire_target_list.size() ) 
+      conv_tar = moonfire_target_list[ static_cast<size_t>( rng().range( 0, as<double>( moonfire_target_list.size() ) ) ) ];
+
+    if ( conv_cast == conv_rake && rake_target_list.size() ) 
+      conv_tar = rake_target_list[ static_cast<size_t>( rng().range( 0, as<double>( rake_target_list.size() ) ) ) ];
+
+    // It doesn't really matter what the thrash target is
+    if ( conv_cast == conv_thrash && thrash_target_list.size() ) 
+      conv_tar = thrash_target_list[ static_cast<size_t>( rng().range( 0, as<double>( thrash_target_list.size() ) ) ) ];
+
+    if ( !conv_cast || !conv_tar )
+      return;
+
+    conv_cast->set_target( conv_tar );
+    conv_cast->execute();
+
+    return;
+
+/*
 
     if ( d->current_tick == ultimate_tick )
     {
@@ -7303,6 +7425,8 @@ struct convoke_the_spirits_t : public druid_spell_t
 
     conv_cast->set_target( conv_tar );
     conv_cast->execute();
+
+    */
   }
 
   void last_tick( dot_t* d ) override
